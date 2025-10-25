@@ -1,0 +1,15 @@
+for genome in Enteritidis_GCF_*.fna; do
+    makeblastdb -in "$genome" -dbtype nucl -out "${genome%.fna}_DB"
+done
+for genome in Enteritidis_GCF_*.fna; do
+    db="${genome%.fna}_DB"
+    out="${genome%.fna}_vs_InvA.out"
+    blastn -query "InvA gene.fasta" -db "$db" -out "$out" -evalue 1e-5 -outfmt 6
+done
+for out in *_vs_paratyphi_UR.out; do
+    if [ -s "$out" ]; then
+        echo "$out : Present"
+    else
+        echo "$out : Absent"
+    fi
+done > enteritidis_vs_paratyphi_UR_summary.txt
