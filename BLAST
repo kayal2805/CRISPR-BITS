@@ -1,0 +1,68 @@
+!apt-get install ncbi-blast+ -y
+from google.colab import files
+import os
+
+uploaded = files.upload()
+query_file = list(uploaded.keys())[0]  # e.g., Paratyphi_core_unique_FINAL (1).fa
+
+# Sanitize filename: remove spaces and parentheses to avoid bash errors
+safe_name = query_file.replace(" ", "_").replace("(", "").replace(")", "")
+if safe_name != query_file:
+    os.rename(query_file, safe_name)
+    query_file = safe_name
+
+print("Using query file:", query_file)
+
+
+species_queries = {
+    "Typhi": "Salmonella enterica subsp. enterica serovar Typhi[organism]",
+    "Typhimurium": "Salmonella enterica subsp. enterica serovar Typhimurium[organism]",
+    "Enteritidis": "Salmonella enterica subsp. enterica serovar Enteritidis[organism]"
+}
+
+blast_outputs = []
+for name, entrez_query in species_queries.items():
+    out_file = f"{name}_blast.tsv"
+    print(f" Running BLAST against {name} ...")
+    !blastn -query "{query_file}" -db nt -remote -entrez_query "{entrez_query}" \
+        -out "{out_file}" -outfmt "6 qseqid sseqid pident length mismatch gaps evalue bitscore stitle"
+    blast_outputs.append(out_file)
+
+print(" All BLAST jobs completed!")
+import pandas as pd
+import os
+
+all_hits = pd.DataFrame()
+for out_file in blast_outputs:
+    if os.path.exists(out_file):  # ensure file was created
+        df = pd.read_csv(out_file, sep="\t", header=None,
+                         names=["qseqid","sseqid","pident","length","mismatch","gaps","evalue","bitscore","stitle"])
+        df["species"] = out_file.replace("_blast.tsv","")
+        all_hits = pd.concat([all_hits, df])
+    else:
+        print(f"Warning: {out_file} not found, skipping...")
+
+# Save all hits for reference
+if not all_hits.empty:
+    all_hits.to_csv("all_nonparatyphi_hits.tsv", sep="\t", index=False)
+from Bio import SeqIO
+# Load query sequences
+query_seqs = {rec.id: str(rec.seq) for rec in SeqIO.parse(query_file, "fasta")}
+
+unique_regions = []
+for qid, seq in query_seqs.items():
+    hits = all_hits[all_hits["qseqid"] == qid]
+
+    # Strong hit definition: >90% identity & >80% query coverage
+    strong_hits = hits[(hits["pident"] > 90) & (hits["length"] > 0.8 * len(seq))]
+
+    # If NO strong hit found in Typhi, Typhimurium, Enteritidis → keep it
+    if strong_hits.empty:
+        unique_regions.append((qid, seq))
+
+# Save unique regions
+with open("paratyphi_specific_regions.fasta", "w") as out:
+    for qid, seq in unique_regions:
+        out.write(f">{qid}\n{seq}\n")
+
+print(f" Found {len(unique_regions)} regions unique to Salmonella Paratyphi (A, B, C)")
