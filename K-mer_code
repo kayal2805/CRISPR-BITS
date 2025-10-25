@@ -1,0 +1,53 @@
+ANCHOR=$(ls Paratyphi_A_GCF_*.fna | head -n1)
+ awk '
+  BEGIN{seq=""}
+  /^>/ {next}
+  {seq=seq toupper($0)}
+  END{
+    n=length(seq)
+    for(i=1; i<=n-30; i++){
+      k=substr(seq,i,31)
+      if(index(k,"N")==0) print k
+    }
+  }
+' "$ANCHOR" | sort -u > CoreUniq.k31.txt
+
+awk '{printf(">k%08d\n%s\n", NR, $1)}' CoreUniq.k31.txt > CoreUniq.k31.fa
+bowtie2-build "$ANCHOR" anchor
+bowtie2 -f -x anchor -U CoreUniq.k31.fa -N 0 -L 31 --score-min C,0,0 -k 100 -S kmer_hits.sam
+samtools view -F4 kmer_hits.sam \
+| awk 'BEGIN{OFS="\t"}{chr=$3; s=$4-1; e=s+31; print chr,s,e}' \
+| sort -k1,1 -k2,2n \
+| bedtools merge -d 50 -i - \
+| awk -v OFS="\t" '($3-$2)>=120' > core_windows.bed
+bedtools getfasta -fi "$ANCHOR" -bed core_windows.bed -fo core_windows.fa
+
+ls Paratyphi_A_GCF_*.fna > PA.lst
+ls Paratyphi_B_GCF_*.fna > PB.lst
+ls Paratyphi_C_GCF_*.fna > PC.lst
+
+cat $(cat PA.lst) > A_all.fa; makeblastdb -in A_all.fa -dbtype nucl -out Adb
+cat $(cat PB.lst) > B_all.fa; makeblastdb -in B_all.fa -dbtype nucl -out Bdb
+cat $(cat PC.lst) > C_all.fa; makeblastdb -in C_all.fa -dbtype nucl -out Cdb
+
+blastn -query core_windows.fa -db Adb -perc_identity 95 -qcov_hsp_perc 95 -max_target_seqs 1 -outfmt "6 qseqid" -num_threads $(nproc) | sort -u > inA.txt
+blastn -query core_windows.fa -db Bdb -perc_identity 95 -qcov_hsp_perc 95 -max_target_seqs 1 -outfmt "6 qseqid" -num_threads $(nproc) | sort -u > inB.txt
+blastn -query core_windows.fa -db Cdb -perc_identity 95 -qcov_hsp_perc 95 -max_target_seqs 1 -outfmt "6 qseqid" -num_threads $(nproc) | sort -u > inC.txt
+
+comm -12 inA.txt inB.txt | comm -12 - inC.txt > present_in_ABC.txt
+# keep only windows present in A, B, and C
+awk 'BEGIN{while((getline<"present_in_ABC.txt")>0) keep[$0]=1}
+     /^>/{id=substr($0,2); ok=keep[id]}
+     {if(ok) print}' core_windows.fa > core_windows_inABC.fa
+ls Typhi_GCF_*.fna Typhimurium_GCF_*.fna Enteritidis_GCF_*.fna > NonP.lst
+cat $(cat NonP.lst) > NonP_all.fa
+makeblastdb -in NonP_all.fa -dbtype nucl -out NonPdb
+
+blastn -query core_windows_inABC.fa -db NonPdb -perc_identity 85 -qcov_hsp_perc 80 \
+       -max_target_seqs 1 -outfmt "6 qseqid" -num_threads $(nproc) | sort -u > hits_nonP.txt
+
+# Final: sequences present in A,B,C and absent from Non-Paratyphi
+awk 'BEGIN{while((getline<"hits_nonP.txt")>0) bad[$0]=1}
+     /^>/{id=substr($0,2); keep=!bad[id]}
+     {if(keep) print}' core_windows_inABC.fa > Paratyphi_core_unique_FINAL.fa
+grep -c "^>" core_windows.fa core_windows_inABC.fa Paratyphi_core_unique_FINAL.fa
